@@ -1,6 +1,5 @@
 #include "cuda_kv.h"
 
-#include <cinttypes>
 #include <cstddef>
 #include <stdexcept>
 
