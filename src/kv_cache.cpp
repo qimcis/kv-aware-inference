@@ -2,6 +2,7 @@
 
 // block allocation and policy-specific eviction
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 
 KVCache::KVCache(const KVConfig& cfg, Instrumentation& instr) : cfg_(cfg), instr_(instr) {
@@ -9,6 +10,8 @@ KVCache::KVCache(const KVConfig& cfg, Instrumentation& instr) : cfg_(cfg), instr
     host_values_.resize(cfg_.max_blocks * cfg_.block_size * cfg_.hidden);  // host V staging
     blocks_.resize(cfg_.max_blocks);                                       // metadata per block
     lru_iters_.assign(cfg_.max_blocks, lru_list_.end());                   // initialize LRU slots
+    freq_.assign(cfg_.max_blocks, 0.0);
+    value_.assign(cfg_.max_blocks, 0.0);
     device_ = allocate_device_kv(cfg_.max_blocks, cfg_.block_size, cfg_.hidden); // allocate device buffers
     check_cuda(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "create stream"); // async stream
     owns_stream_ = true;
@@ -34,19 +37,57 @@ void KVCache::log_evictions(int block_id) {
                                tok.decode);
     }
     meta.tokens.clear();
+    freq_[block_id] = 0.0;
+    value_[block_id] = 0.0;
 }
 
 int KVCache::select_victim() {
-    if (lru_list_.empty()) {
+    if (cfg_.policy == CachePolicy::kLRU || cfg_.policy == CachePolicy::kSlidingWindow) {
+        if (lru_list_.empty()) {
+            throw std::runtime_error("no blocks available for eviction");
+        }
+        int id = lru_list_.front();       // oldest by recency
+        lru_list_.pop_front();            // remove from head
+        lru_iters_[id] = lru_list_.end(); // mark as detached
+        return id;
+    }
+
+    double best_score = std::numeric_limits<double>::infinity();
+    int best_id = -1;
+    for (std::size_t i = 0; i < blocks_.size(); ++i) {
+        if (!blocks_[i].in_use) {
+            continue;
+        }
+        double score = 0.0;
+        if (cfg_.policy == CachePolicy::kLFU) {
+            score = freq_[i];
+        } else if (cfg_.policy == CachePolicy::kCost) {
+            score = value_[i];
+        }
+        if (score < best_score || (score == best_score && static_cast<int>(i) < best_id)) {
+            best_score = score;
+            best_id = static_cast<int>(i);
+        }
+    }
+    if (best_id < 0) {
         throw std::runtime_error("no blocks available for eviction");
     }
-    int id = lru_list_.front();       // oldest by recency
-    lru_list_.pop_front();            // remove from head
-    lru_iters_[id] = lru_list_.end(); // mark as detached
-    return id;
+    auto it = lru_iters_[best_id];
+    if (it != lru_list_.end()) {
+        lru_list_.erase(it);
+    }
+    lru_iters_[best_id] = lru_list_.end();
+    return best_id;
 }
 
 void KVCache::touch_block(int block_id) {
+    // update decayed frequency/value for LFU/cost
+    if (cfg_.policy == CachePolicy::kLFU || cfg_.policy == CachePolicy::kCost) {
+        freq_[block_id] = freq_[block_id] * cfg_.decay + 1.0;
+        if (cfg_.policy == CachePolicy::kCost) {
+            value_[block_id] = value_[block_id] * cfg_.decay + 1.0;
+        }
+    }
     auto it = lru_iters_[block_id];
     if (it != lru_list_.end()) {
         lru_list_.erase(it); // remove existing position
@@ -66,6 +107,8 @@ int KVCache::allocate_block(std::size_t seq_id) {
             blocks_[i].tokens.clear();
             lru_list_.push_back(static_cast<int>(i));
             lru_iters_[i] = std::prev(lru_list_.end());
+            freq_[i] = 0.0;
+            value_[i] = 0.0;
             instr_.log(EventType::kAllocate, "fresh", seq_id, i, 0, bytes_per_block());
             return static_cast<int>(i);
         }
@@ -73,13 +116,28 @@ int KVCache::allocate_block(std::size_t seq_id) {
 
     int evict_id = select_victim(); // pick lru block
     log_evictions(evict_id);
-    instr_.log(EventType::kEvict, "lru", blocks_[evict_id].seq_id, evict_id, 0, bytes_per_block());
+    const char* reason = "evict";
+    switch (cfg_.policy) {
+    case CachePolicy::kLRU:
+    case CachePolicy::kSlidingWindow:
+        reason = "lru";
+        break;
+    case CachePolicy::kLFU:
+        reason = "lfu";
+        break;
+    case CachePolicy::kCost:
+        reason = "cost";
+        break;
+    }
+    instr_.log(EventType::kEvict, reason, blocks_[evict_id].seq_id, evict_id, 0, bytes_per_block());
     blocks_[evict_id].seq_id = seq_id;
     blocks_[evict_id].version++;
     blocks_[evict_id].tokens.clear();
     instr_.log(EventType::kReuse, "reassign", seq_id, evict_id, 0, bytes_per_block());
     lru_list_.push_back(evict_id);             // put reused block at mru
     lru_iters_[evict_id] = std::prev(lru_list_.end());
+    freq_[evict_id] = 0.0;
+    value_[evict_id] = 0.0;
     return evict_id;
 }
 

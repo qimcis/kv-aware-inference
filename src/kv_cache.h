@@ -14,7 +14,9 @@
 // evicition policy for the cache
 enum class CachePolicy {
     kLRU,
-    kSlidingWindow
+    kSlidingWindow,
+    kLFU,
+    kCost
 };
 
 struct KVConfig {
@@ -23,6 +25,7 @@ struct KVConfig {
     std::size_t hidden = 64;
     CachePolicy policy = CachePolicy::kLRU;
     std::size_t window_size = 0; // only used by sliding-window (tokens to keep)
+    double decay = 0.9;          // used by LFU/cost policies
 };
 
 class KVCache {
@@ -87,6 +90,8 @@ class KVCache {
     std::unordered_map<std::size_t, SequenceState> sequences_; // Per-sequence state
     std::list<int> lru_list_;               // blocks ordered by recency
     std::vector<std::list<int>::iterator> lru_iters_; // iterators for LRU updates
+    std::vector<double> freq_;              // frequency scores for LFU
+    std::vector<double> value_;             // value scores for cost-based eviction
 };
 
 // straight-line kv cache

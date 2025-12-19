@@ -17,6 +17,7 @@ struct SimEvent {
 };
 
 enum class DecodePolicy { kFCFS, kSLO, kSRPT };
+enum class CacheSimPolicy { kLRU, kSlidingWindow, kLFU, kCost };
 
 struct SimConfig {
     double prefill_tokens_per_s = 5000.0;
@@ -25,6 +26,10 @@ struct SimConfig {
     std::size_t decode_chunk_tokens = 16; // per-request chunk for decode steps
     double prefill_priority = 0.5;        // >0.5 favors prefill when both are idle
     DecodePolicy decode_policy = DecodePolicy::kFCFS;
+    CacheSimPolicy cache_policy = CacheSimPolicy::kLRU;
+    std::size_t cache_block_tokens = 16;
+    std::size_t cache_capacity_tokens = 0; // 0 means unbounded
+    double cache_decay = 0.9;
 };
 
 struct RequestTimeline {

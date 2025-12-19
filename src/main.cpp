@@ -23,6 +23,10 @@ std::string policy_name(CachePolicy p) {
         return "lru";
     case CachePolicy::kSlidingWindow:
         return "window";
+    case CachePolicy::kLFU:
+        return "lfu";
+    case CachePolicy::kCost:
+        return "cost";
     }
     return "unknown";
 }
@@ -68,6 +72,12 @@ CachePolicy parse_policy(const std::string& s) {
     }
     if (s == "window") {
         return CachePolicy::kSlidingWindow;
+    }
+    if (s == "lfu") {
+        return CachePolicy::kLFU;
+    }
+    if (s == "cost") {
+        return CachePolicy::kCost;
     }
     throw std::runtime_error("unknown policy: " + s);
 }
