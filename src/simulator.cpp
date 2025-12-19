@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <limits>
 #include <queue>
 #include <stdexcept>
 #include <unordered_map>
@@ -46,6 +47,48 @@ void record_prefix(const TraceRequest& req, std::unordered_map<std::string, std:
         return;
     }
     cache[*req.prefix_id] = req.prefix_tokens.value_or(req.prompt_tokens);
+}
+
+int select_decode(std::deque<int>& decode_queue, double now_ms, const SimConfig& cfg,
+                  const std::vector<RequestState>& state) {
+    if (decode_queue.empty()) {
+        return -1;
+    }
+    if (cfg.decode_policy == DecodePolicy::kFCFS) {
+        int idx = decode_queue.front();
+        decode_queue.pop_front();
+        return idx;
+    }
+
+    double best = std::numeric_limits<double>::infinity();
+    std::size_t best_pos = 0;
+    for (std::size_t pos = 0; pos < decode_queue.size(); ++pos) {
+        int idx = decode_queue[pos];
+        const auto& r = state[static_cast<std::size_t>(idx)];
+        double score = 0.0;
+        switch (cfg.decode_policy) {
+        case DecodePolicy::kSLO: {
+            double deadline = r.req.slo_ms.has_value()
+                                  ? (r.timeline.arrival_ms + *r.req.slo_ms)
+                                  : std::numeric_limits<double>::infinity();
+            score = deadline - now_ms; // lower slack → higher priority
+            break;
+        }
+        case DecodePolicy::kSRPT:
+            score = static_cast<double>(r.decode_remaining);
+            break;
+        case DecodePolicy::kFCFS:
+            score = static_cast<double>(pos);
+            break;
+        }
+        if (score < best) {
+            best = score;
+            best_pos = pos;
+        }
+    }
+    int idx = decode_queue[best_pos];
+    decode_queue.erase(decode_queue.begin() + static_cast<std::ptrdiff_t>(best_pos));
+    return idx;
 }
 
 }
@@ -133,8 +176,10 @@ SimResult run_token_time_sim(const std::vector<TraceRequest>& raw_trace, const S
         std::vector<int> batch;
         std::size_t tokens = 0;
         while (!decode_queue.empty() && batch.size() < cfg.max_batch) {
-            int idx = decode_queue.front();
-            decode_queue.pop_front();
+            int idx = select_decode(decode_queue, t_ms, cfg, state);
+            if (idx < 0) {
+                break;
+            }
             auto& r = state[static_cast<std::size_t>(idx)];
             if (r.decode_remaining == 0) {
                 continue;
@@ -157,6 +202,19 @@ SimResult run_token_time_sim(const std::vector<TraceRequest>& raw_trace, const S
         decode_busy = true;
     };
 
+    auto schedule_both = [&](double t_ms) {
+        if (cfg.prefill_priority > 0.5) {
+            schedule_prefill(t_ms);
+            schedule_decode(t_ms);
+        } else if (cfg.prefill_priority < 0.5) {
+            schedule_decode(t_ms);
+            schedule_prefill(t_ms);
+        } else {
+            schedule_prefill(t_ms);
+            schedule_decode(t_ms);
+        }
+    };
+
     while (!events.empty()) {
         SimEvent ev = events.top();
         events.pop();
@@ -168,8 +226,7 @@ SimResult run_token_time_sim(const std::vector<TraceRequest>& raw_trace, const S
                 prefill_queue.push_back(idx);
                 state[static_cast<std::size_t>(idx)].prefill_enqueued = true;
             }
-            schedule_prefill(now_ms);
-            schedule_decode(now_ms); // decode can run concurrently if idle
+            schedule_both(now_ms);
             break;
         }
         case SimEventType::kPrefillDone: {
@@ -180,8 +237,7 @@ SimResult run_token_time_sim(const std::vector<TraceRequest>& raw_trace, const S
                 r.timeline.prefill_end_ms = now_ms;
                 decode_queue.push_back(idx);
             }
-            schedule_prefill(now_ms);
-            schedule_decode(now_ms);
+            schedule_both(now_ms);
             break;
         }
         case SimEventType::kDecodeChunkDone: {
@@ -197,7 +253,7 @@ SimResult run_token_time_sim(const std::vector<TraceRequest>& raw_trace, const S
                     decode_queue.push_back(idx);
                 }
             }
-            schedule_decode(now_ms);
+            schedule_both(now_ms);
             break;
         }
         }

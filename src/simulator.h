@@ -16,11 +16,15 @@ struct SimEvent {
     std::vector<int> req_indices; // indices into the state vector affected by this event
 };
 
+enum class DecodePolicy { kFCFS, kSLO, kSRPT };
+
 struct SimConfig {
     double prefill_tokens_per_s = 5000.0;
     double decode_tokens_per_s = 8000.0;
     std::size_t max_batch = 4;
     std::size_t decode_chunk_tokens = 16; // per-request chunk for decode steps
+    double prefill_priority = 0.5;        // >0.5 favors prefill when both are idle
+    DecodePolicy decode_policy = DecodePolicy::kFCFS;
 };
 
 struct RequestTimeline {
