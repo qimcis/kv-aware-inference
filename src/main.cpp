@@ -140,7 +140,7 @@ RunConfig parse_args(int argc, char** argv) {
 void run_simulation(const RunConfig& run) {
     Instrumentation instr; // collects detailed cache events
     std::size_t hidden_stride = run.hidden * run.layers;
-    instr.set_run_meta({run.block_size, run.max_blocks, hidden_stride, run.heads, run.layers, run.batch, false});
+    instr.set_run_meta({run.block_size, run.max_blocks, hidden_stride, run.heads, run.layers, run.head_dim, run.batch, false});
     KVCache kv_cache({run.block_size, run.max_blocks, run.hidden, run.layers, run.policy, run.window_size},
                      instr); // block cache
     NaiveCache naive(hidden_stride, instr); // straight line baseline
@@ -165,9 +165,11 @@ void run_simulation(const RunConfig& run) {
 
     for (std::size_t t = 0; t < run.prefill_tokens; ++t) {
         simulate(false, t, t); // prefill uses the same step token index
+        kv_cache.simulate_attention(0, t, 0, false);
     }
     for (std::size_t t = 0; t < run.decode_tokens; ++t) {
         simulate(true, run.prefill_tokens + t, run.prefill_tokens + t); // decode steps advance the index
+        kv_cache.simulate_attention(0, run.prefill_tokens + t, 0, true);
     }
 
     kv_cache.synchronize(); // ensure transfers complete before reporting

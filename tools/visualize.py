@@ -11,11 +11,12 @@ import sys
 from collections import defaultdict
 
 import matplotlib
+
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
-from matplotlib import colors
 import numpy as np
+from matplotlib import colors
 
 
 def load_log(path):
@@ -32,6 +33,7 @@ def build_cache_states(log):
     meta = log.get("meta", {})
     block_size = int(meta.get("block_size", 0))
     max_blocks = int(meta.get("max_blocks", 0))
+    head_dim = int(meta.get("head_dim", 0))
     events = sorted(log.get("token_events", []), key=lambda e: e.get("timestamp_us", 0))
     if block_size == 0 or max_blocks == 0:
         return [], [], meta
@@ -85,7 +87,9 @@ def render_state(ax, state, title=None):
                 labels[b][s] = ev.get("token_text") or f"id{ev.get('token_id', -1)}"
     ax.clear()
     base_cmap = plt.colormaps.get_cmap("viridis")
-    cmap = colors.ListedColormap(["#f0f0f0"] + [base_cmap(i) for i in range(base_cmap.N)])
+    cmap = colors.ListedColormap(
+        ["#f0f0f0"] + [base_cmap(i) for i in range(base_cmap.N)]
+    )
     im = ax.imshow(grid + 1, interpolation="nearest", cmap=cmap, aspect="auto")
     ax.set_xlabel("Block slot")
     ax.set_ylabel("Block id")
@@ -111,7 +115,7 @@ def describe_token_event(ev):
     slot = ev.get("block_offset", 0)
     idx = ev.get("token_index", 0)
     phase = "decode" if ev.get("decode") else "prefill"
-    return f"{kind} seq={batch} token_idx={idx} id={token_id} text=\"{token_text}\" block={block} slot={slot} phase={phase}"
+    return f'{kind} seq={batch} token_idx={idx} id={token_id} text="{token_text}" block={block} slot={slot} phase={phase}'
 
 
 def export_static_frames(states, token_events, meta, out_dir):
@@ -134,8 +138,14 @@ def render_attention(ax, seq, head, query, lookup, tokens_by_seq):
 
 def main():
     parser = argparse.ArgumentParser(description="Render KV cache blocks as PNGs.")
-    parser.add_argument("--log", required=True, help="Path to log.json produced by kv_aware --log-json.")
-    parser.add_argument("--out-dir", required=True, help="Write a PNG per cache event into this directory.")
+    parser.add_argument(
+        "--log", required=True, help="Path to log.json produced by kv_aware --log-json."
+    )
+    parser.add_argument(
+        "--out-dir",
+        required=True,
+        help="Write a PNG per cache event into this directory.",
+    )
     args = parser.parse_args()
 
     log = load_log(args.log)

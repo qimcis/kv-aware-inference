@@ -45,6 +45,9 @@ class KVCache {
     // simulate an attention read over a sequence to touch blocks and log scores
     void simulate_attention(std::size_t seq_id, std::size_t query_index, std::size_t head, bool decode_step);
 
+    // retrieve K/V vectors for a given token index (for a head-span)
+    std::pair<std::vector<float>, std::vector<float>> fetch_token_kv(std::size_t seq_id, std::size_t token_index) const;
+
     // syncronize CUDA stream to ensure transfers are complete
     void synchronize();
     // bytes consumed by a single block (k+v)

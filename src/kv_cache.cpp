@@ -260,5 +260,40 @@ void KVCache::simulate_attention(std::size_t seq_id, std::size_t query_index, st
         // simple decreasing weight to keep deterministic but distinct
         scores[i] = 1.0f / static_cast<float>(i + 1);
     }
+    // touch all blocks for this sequence to simulate read-side recency
+    touch_sequence_blocks(seq_id, -1);
     instr_.log_attention(seq_id, query_index, head, scores, decode_step);
+}
+
+std::pair<std::vector<float>, std::vector<float>> KVCache::fetch_token_kv(std::size_t seq_id,
+                                                                          std::size_t token_index) const {
+    auto sit = sequences_.find(seq_id);
+    if (sit == sequences_.end()) {
+        return {};
+    }
+    // Find the token label across blocks
+    for (const auto& blk : blocks_) {
+        if (!blk.in_use || blk.seq_id != seq_id) {
+            continue;
+        }
+        for (const auto& tok : blk.tokens) {
+            if (tok.token_index == token_index) {
+                std::size_t base =
+                    static_cast<std::size_t>(tok.block_id) * cfg_.block_size * hidden_stride_;
+                std::size_t offset = base + tok.block_offset * hidden_stride_;
+                std::vector<float> k(hidden_stride_);
+                std::vector<float> v(hidden_stride_);
+                // copy from device to host for debug/fetch
+                check_cuda(cudaMemcpyAsync(k.data(), device_.keys + offset,
+                                           hidden_stride_ * sizeof(float), cudaMemcpyDeviceToHost, stream_),
+                           "fetch k");
+                check_cuda(cudaMemcpyAsync(v.data(), device_.values + offset,
+                                           hidden_stride_ * sizeof(float), cudaMemcpyDeviceToHost, stream_),
+                           "fetch v");
+                check_cuda(cudaStreamSynchronize(stream_), "fetch sync");
+                return {std::move(k), std::move(v)};
+            }
+        }
+    }
+    return {};
 }
