@@ -25,7 +25,7 @@ enum class EventType {
 struct Event {
     EventType type;
     std::string label;
-    std::size_t batch_id = 0;
+    std::size_t batch_id = 0; // also used as seq_id for compatibility
     std::size_t block_id = 0;
     std::size_t token_index = 0;
     std::size_t bytes = 0;
@@ -37,7 +37,7 @@ struct Event {
 
 struct TokenEvent {
     std::string kind; // place or evict token
-    std::size_t batch_id = 0;
+    std::size_t batch_id = 0; // also used as seq_id for compatibility
     std::size_t block_id = 0;
     std::size_t block_offset = 0;
     std::size_t token_index = 0;
@@ -57,6 +57,13 @@ struct AttentionEvent {
     std::chrono::steady_clock::time_point timestamp;
 };
 
+struct Summary {
+    std::size_t total_allocations = 0;
+    std::size_t total_evictions = 0;
+    std::size_t total_transfer_bytes = 0;
+    std::size_t total_events = 0;
+};
+
 struct RunMeta {
     std::size_t block_size = 0;
     std::size_t max_blocks = 0;
@@ -70,6 +77,35 @@ struct RunMeta {
 
 class Instrumentation {
   public:
+    // Blog-aligned thin wrappers -----------------------------------------
+    void log_event(const std::string& type, std::size_t block_id, std::size_t seq_id) {
+        log(parse_event_type(type), type, seq_id, block_id, 0, 0, -1, std::string(), false);
+    }
+
+    void log_token_placement(int token_id, std::size_t block_id, std::size_t slot,
+                             const std::string& phase, std::size_t seq_id = 0,
+                             const std::string& token_text = std::string()) {
+        bool decode = phase == "decode";
+        log_token_event("place", seq_id, block_id, slot, slot, token_id, token_text, decode);
+    }
+
+    void log_transfer(std::size_t bytes, std::size_t seq_id = 0, std::size_t block_id = 0,
+                      std::size_t token_index = 0, bool decode = false) {
+        log(EventType::kTransfer, "transfer", seq_id, block_id, token_index, bytes, -1, std::string(),
+            decode);
+    }
+
+    Summary get_summary() const {
+        std::lock_guard<std::mutex> guard(mu_);
+        return Summary{total_alloc_, total_evict_, total_transfer_bytes_, total_events_};
+    }
+
+    static uint64_t now_micros() {
+        using namespace std::chrono;
+        return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+    }
+    // --------------------------------------------------------------------
+
     void set_run_meta(const RunMeta& meta) {
         std::lock_guard<std::mutex> guard(mu_);
         meta_ = meta;
@@ -224,7 +260,9 @@ class Instrumentation {
                 << "\"type\":\"" << event_name(e.type) << "\","
                 << "\"label\":\"" << escape(e.label) << "\","
                 << "\"batch\":" << e.batch_id << ","
+                << "\"seq_id\":" << e.batch_id << ","
                 << "\"block\":" << e.block_id << ","
+                << "\"block_id\":" << e.block_id << ","
                 << "\"token_index\":" << e.token_index << ","
                 << "\"bytes\":" << e.bytes << ","
                 << "\"token_id\":" << e.token_id << ","
@@ -250,7 +288,9 @@ class Instrumentation {
                                       : "token_event") << "\","
                 << "\"label\":\"" << escape(t.kind) << "\","
                 << "\"batch\":" << t.batch_id << ","
+                << "\"seq_id\":" << t.batch_id << ","
                 << "\"block\":" << t.block_id << ","
+                << "\"block_id\":" << t.block_id << ","
                 << "\"slot\":" << t.block_offset << ","
                 << "\"token_index\":" << t.token_index << ","
                 << "\"bytes\":0,"
@@ -376,6 +416,17 @@ class Instrumentation {
 
     long long time_since_start(std::chrono::steady_clock::time_point t) const {
         return std::chrono::duration_cast<std::chrono::microseconds>(t - start_).count();
+    }
+
+    EventType parse_event_type(const std::string& name) const {
+        if (name == "ALLOC") return EventType::kAllocate;
+        if (name == "REUSE") return EventType::kReuse;
+        if (name == "EVICT" || name == "token_evicted") return EventType::kEvict;
+        if (name == "TRANSFER") return EventType::kTransfer;
+        if (name == "NAIVE_WRITE") return EventType::kNaiveWrite;
+        if (name == "PREFILL") return EventType::kPrefillStep;
+        if (name == "DECODE") return EventType::kDecodeStep;
+        return EventType::kAllocate;
     }
 
     std::chrono::steady_clock::time_point start_ = std::chrono::steady_clock::now();

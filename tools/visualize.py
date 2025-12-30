@@ -178,21 +178,26 @@ def export_attention_frames(attn_events, meta, out_dir):
     return len(attn_events)
 
 
-def export_frequency_heatmap(token_events, meta, out_dir):
+def compute_frequency_matrix(token_events, meta):
     block_size = int(meta.get("block_size", 0))
     max_blocks = int(meta.get("max_blocks", 0))
     if block_size == 0 or max_blocks == 0:
-        return False
+        return None
     freq = np.zeros((max_blocks, block_size), dtype=float)
     for ev in token_events:
         block = int(ev.get("block", -1))
-        slot = int(ev.get("block_offset", -1))
+        slot = int(ev.get("block_offset", ev.get("slot", -1)))
         if block < 0 or block >= max_blocks or slot < 0 or slot >= block_size:
             continue
         kind = ev.get("kind", "")
         if kind in ("place", "touch"):
             freq[block, slot] += 1.0
-    if not freq.any():
+    return freq
+
+
+def export_frequency_heatmap(token_events, meta, out_dir):
+    freq = compute_frequency_matrix(token_events, meta)
+    if freq is None or not freq.any():
         return False
     os.makedirs(out_dir, exist_ok=True)
     plt.figure(figsize=(10, 6))
@@ -205,6 +210,28 @@ def export_frequency_heatmap(token_events, meta, out_dir):
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     plt.close()
+    return True
+
+
+def export_comparison_heatmap(lru_freq, lfu_freq, out_dir):
+    if lru_freq is None or lfu_freq is None:
+        return False
+    if lru_freq.shape != lfu_freq.shape:
+        return False
+    os.makedirs(out_dir, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    for ax, freq, title in zip(
+        axes, [lru_freq, lfu_freq], ["LRU frequency", "LFU frequency"]
+    ):
+        im = ax.imshow(freq, aspect="auto", cmap="coolwarm")
+        ax.set_xlabel("Block slot")
+        ax.set_ylabel("Block id")
+        ax.set_title(title)
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    out_path = os.path.join(out_dir, "frequency_comparison.png")
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
     return True
 
 
@@ -248,13 +275,15 @@ def main():
             print(f"[{suffix}] wrote {attn_written} attention PNGs")
         if freq_written:
             print(f"[{suffix}] wrote frequency heatmap")
-        return token_events
+        return token_events, meta
 
     if args.compare:
         os.makedirs(args.out_dir, exist_ok=True)
-        lru_tokens = render_single(args.compare[0], "lru")
-        lfu_tokens = render_single(args.compare[1], "lfu")
-        # side-by-side frequency heatmaps
+        lru_tokens, lru_meta = render_single(args.compare[0], "lru")
+        lfu_tokens, lfu_meta = render_single(args.compare[1], "lfu")
+        lru_freq = compute_frequency_matrix(lru_tokens, lru_meta)
+        lfu_freq = compute_frequency_matrix(lfu_tokens, lfu_meta)
+        export_comparison_heatmap(lru_freq, lfu_freq, args.out_dir)
         print(
             f"Comparison complete. Outputs under {args.out_dir}/lru and {args.out_dir}/lfu."
         )

@@ -228,6 +228,13 @@ void KVCache::store_token(std::size_t seq_id, std::size_t token_index,
                         check_cuda(cudaMemsetAsync(device_.values + base, 0, bytes, stream_), "wipe block values");
                         instr_.log(EventType::kEvict, "window_wipe", seq_id, static_cast<std::size_t>(drop.block_id),
                                    drop.token_index, bytes);
+                        blocks_[drop.block_id].in_use = false;
+                        blocks_[drop.block_id].seq_id = 0;
+                        auto it_list = lru_iters_[drop.block_id];
+                        if (it_list != lru_list_.end()) {
+                            lru_list_.erase(it_list);
+                        }
+                        lru_iters_[drop.block_id] = lru_list_.end();
                     }
                 }
             }
@@ -287,6 +294,7 @@ void KVCache::simulate_attention(std::size_t seq_id, std::size_t query_index, st
         return;
     }
     std::vector<float> scores(capped, 0.0f);
+    std::vector<float> tmp(head_dim);
     for (std::size_t i = 0; i < capped; ++i) {
         const auto& tok = toks[i];
         std::size_t base =
@@ -294,10 +302,18 @@ void KVCache::simulate_attention(std::size_t seq_id, std::size_t query_index, st
         for (std::size_t layer = 0; layer < cfg_.layers; ++layer) {
             std::size_t layer_offset = layer * cfg_.hidden;
             std::size_t head_offset = head * head_dim;
+            // copy per-head slice from device for realism
+            check_cuda(cudaMemcpyAsync(tmp.data(),
+                                       device_.keys + base + layer_offset + head_offset,
+                                       head_dim * sizeof(float),
+                                       cudaMemcpyDeviceToHost,
+                                       stream_),
+                       "attn copy key");
+            check_cuda(cudaStreamSynchronize(stream_), "attn copy sync");
             float dot = 0.0f;
             for (std::size_t d = 0; d < head_dim; ++d) {
                 float qv = qkv.first[layer_offset + head_offset + d];
-                float kv = host_keys_[base + layer_offset + head_offset + d];
+                float kv = tmp[d];
                 dot += qv * kv;
             }
             scores[i] = dot;
