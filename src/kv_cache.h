@@ -23,6 +23,7 @@ struct KVConfig {
     std::size_t block_size = 16;
     std::size_t max_blocks = 16;
     std::size_t hidden = 64;
+    std::size_t layers = 1;
     CachePolicy policy = CachePolicy::kLRU;
     std::size_t window_size = 0; // only used by sliding-window (tokens to keep)
     double decay = 0.9;          // used by LFU/cost policies
@@ -77,6 +78,7 @@ class KVCache {
     void log_evictions(int block_id);
     int select_victim();
     void touch_block(int block_id);
+    void touch_sequence_blocks(std::size_t seq_id, int skip_block);
 
     KVConfig cfg_;                          // static cache settings
     Instrumentation& instr_;                // event sink shared with the app
@@ -92,6 +94,7 @@ class KVCache {
     std::vector<std::list<int>::iterator> lru_iters_; // iterators for LRU updates
     std::vector<double> freq_;              // frequency scores for LFU
     std::vector<double> value_;             // value scores for cost-based eviction
+    std::size_t hidden_stride_ = 0;         // hidden * layers for storage and copies
 };
 
 // straight-line kv cache

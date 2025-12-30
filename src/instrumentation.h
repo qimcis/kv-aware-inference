@@ -62,6 +62,7 @@ struct RunMeta {
     std::size_t max_blocks = 0;
     std::size_t hidden = 0;
     std::size_t num_heads = 0;
+    std::size_t layers = 0;
     std::size_t batch = 0;
     bool real_layer = false;
 };
@@ -193,6 +194,7 @@ class Instrumentation {
             << "\"max_blocks\":" << meta_.max_blocks << ","
             << "\"hidden\":" << meta_.hidden << ","
             << "\"num_heads\":" << meta_.num_heads << ","
+            << "\"layers\":" << meta_.layers << ","
             << "\"batch\":" << meta_.batch << ","
             << "\"real_layer\":" << (meta_.real_layer ? "true" : "false")
             << "},";

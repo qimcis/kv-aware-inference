@@ -39,6 +39,8 @@ struct RunConfig {
     std::size_t block_size = 16;
     std::size_t max_blocks = 32;
     std::size_t hidden = 64;
+    std::size_t layers = 1;
+    std::size_t heads = 1;
     std::string json_path;
     std::vector<std::string> prompt_tokens;
     CachePolicy policy = CachePolicy::kLRU;
@@ -105,6 +107,10 @@ RunConfig parse_args(int argc, char** argv) {
             cfg.max_blocks = std::stoul(next());
         } else if (arg == "--hidden") {
             cfg.hidden = std::stoul(next());
+        } else if (arg == "--layers") {
+            cfg.layers = std::stoul(next());
+        } else if (arg == "--heads") {
+            cfg.heads = std::stoul(next());
         } else if (arg == "--log-json") {
             cfg.json_path = next();
         } else if (arg == "--prompt") {
@@ -126,11 +132,13 @@ RunConfig parse_args(int argc, char** argv) {
 // execute a full run using the synthetic kv path
 void run_simulation(const RunConfig& run) {
     Instrumentation instr; // collects detailed cache events
-    instr.set_run_meta({run.block_size, run.max_blocks, run.hidden, 0, run.batch, false});
-    KVCache kv_cache({run.block_size, run.max_blocks, run.hidden, run.policy, run.window_size}, instr); // block cache
-    NaiveCache naive(run.hidden, instr); // straight line baseline
+    std::size_t hidden_stride = run.hidden * run.layers;
+    instr.set_run_meta({run.block_size, run.max_blocks, hidden_stride, run.heads, run.layers, run.batch, false});
+    KVCache kv_cache({run.block_size, run.max_blocks, run.hidden, run.layers, run.policy, run.window_size},
+                     instr); // block cache
+    NaiveCache naive(hidden_stride, instr); // straight line baseline
 
-    TransformerBlock block({run.hidden, 32000}); // synthetic token emitter
+    TransformerBlock block({run.hidden, run.layers, 32000}); // synthetic token emitter
     auto simulate = [&](bool decode_phase, std::size_t step, std::size_t token_index) {
         for (std::size_t b = 0; b < run.batch; ++b) {
             int token_id;
@@ -161,6 +169,7 @@ void run_simulation(const RunConfig& run) {
     std::cout << "batch=" << run.batch << " prefill=" << run.prefill_tokens
               << " decode=" << run.decode_tokens << " block_size=" << run.block_size
               << " max_blocks=" << run.max_blocks << " hidden=" << run.hidden
+              << " layers=" << run.layers << " heads=" << run.heads
               << " policy=" << policy_name(run.policy);
     if (run.policy == CachePolicy::kSlidingWindow && run.window_size > 0) {
         std::cout << " window=" << run.window_size;

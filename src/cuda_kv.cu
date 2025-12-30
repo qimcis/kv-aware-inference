@@ -25,7 +25,7 @@ DeviceKVLayout allocate_device_kv(std::size_t max_blocks, std::size_t block_size
     layout.block_size = block_size;
     layout.hidden = hidden;
     std::size_t block_bytes = block_size * hidden * sizeof(float);
-    std:;size_t total_bytes = max_blocks * block_bytes;
+    std::size_t total_bytes = max_blocks * block_bytes;
     cudaMalloc(&layout.keys, total_bytes);
     cudaMalloc(&layout.values, total_bytes);
     cudaMalloc(&layout.staging_keys, block_bytes);
@@ -47,7 +47,7 @@ void free_device_kv(DeviceKVLayout &layout) {
     if (layout.staging_values) {
         cudaFree(layout.staging_values);
     }
-    layout = {}
+    layout = {};
 }
 
 void stage_block(const float* host_keys, const float* host_values, std::size_t tokens, DeviceKVLayout& layout, cudaStream_t stream) {
@@ -59,7 +59,7 @@ void stage_block(const float* host_keys, const float* host_values, std::size_t t
     cudaMemcpyAsync(layout.staging_values, host_values, bytes, cudaMemcpyHostToDevice, stream);
 }
 
-void move_block_to_cache(const DeviceKVLayout &layout, std::size_t block_idx, std::size_t tokens, int stream) {
+void move_block_to_cache(const DeviceKVLayout &layout, std::size_t block_idx, std::size_t tokens, cudaStream_t stream) {
     if (block_idx >= layout.max_blocks) {
         throw std::runtime_error("block_dx exceeds capacity");
     }

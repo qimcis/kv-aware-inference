@@ -50,6 +50,16 @@ struct SimResult {
     std::size_t total_prefill_tokens = 0;
     std::size_t total_decode_tokens = 0;
     std::size_t total_prefill_saved = 0;
+    // Aggregate metrics
+    double latency_p50_ms = 0.0;
+    double latency_p90_ms = 0.0;
+    double latency_p95_ms = 0.0;
+    double latency_p99_ms = 0.0;
+    double ttft_p50_ms = 0.0;
+    double tpot_p50_ms = 0.0; // time per output token
+    double throughput_rps = 0.0;
+    double throughput_tokens_per_s = 0.0;
+    double prefill_hit_rate = 0.0;
 };
 
 // run a token-time simulation over a trace, producing per-request timelines.

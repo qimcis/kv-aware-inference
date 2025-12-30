@@ -30,6 +30,21 @@ double tokens_to_ms(std::size_t tokens, double rate_tokens_per_s) {
     return (static_cast<double>(tokens) / rate_tokens_per_s) * 1000.0;
 }
 
+double percentile(std::vector<double>& v, double p) {
+    if (v.empty()) {
+        return 0.0;
+    }
+    std::sort(v.begin(), v.end());
+    double idx = (p / 100.0) * (static_cast<double>(v.size()) - 1.0);
+    std::size_t lo = static_cast<std::size_t>(std::floor(idx));
+    std::size_t hi = static_cast<std::size_t>(std::ceil(idx));
+    if (lo == hi) {
+        return v[lo];
+    }
+    double weight = idx - static_cast<double>(lo);
+    return v[lo] * (1.0 - weight) + v[hi] * weight;
+}
+
 struct PrefixEntry {
     std::size_t tokens = 0;
     double freq = 0.0;
@@ -374,5 +389,39 @@ SimResult run_token_time_sim(const std::vector<TraceRequest>& raw_trace, const S
         makespan = std::max(makespan, state[i].timeline.completion_ms);
     }
     result.makespan_ms = makespan;
+
+    // Aggregate metrics
+    std::vector<double> latencies;
+    std::vector<double> ttfts;
+    std::vector<double> tpots;
+    latencies.reserve(result.requests.size());
+    for (const auto& r : result.requests) {
+        if (r.completion_ms >= 0.0) {
+            latencies.push_back(r.completion_ms - r.arrival_ms);
+        }
+        if (r.first_token_ms >= 0.0 && r.arrival_ms >= 0.0) {
+            ttfts.push_back(r.first_token_ms - r.arrival_ms);
+        }
+        if (r.decode_start_ms >= 0.0 && r.gen_tokens > 0 && r.completion_ms >= 0.0) {
+            double decode_dur = r.completion_ms - r.decode_start_ms;
+            tpots.push_back(decode_dur / static_cast<double>(r.gen_tokens));
+        }
+    }
+    result.latency_p50_ms = percentile(latencies, 50.0);
+    result.latency_p90_ms = percentile(latencies, 90.0);
+    result.latency_p95_ms = percentile(latencies, 95.0);
+    result.latency_p99_ms = percentile(latencies, 99.0);
+    result.ttft_p50_ms = percentile(ttfts, 50.0);
+    result.tpot_p50_ms = percentile(tpots, 50.0);
+    double makespan_s = makespan / 1000.0;
+    if (makespan_s > 0) {
+        result.throughput_rps = static_cast<double>(result.requests.size()) / makespan_s;
+        result.throughput_tokens_per_s = static_cast<double>(result.total_decode_tokens) / makespan_s;
+    }
+    if (result.total_prefill_tokens > 0) {
+        result.prefill_hit_rate =
+            static_cast<double>(result.total_prefill_saved) /
+            static_cast<double>(result.total_prefill_tokens);
+    }
     return result;
 }

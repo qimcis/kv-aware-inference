@@ -7,15 +7,16 @@
 
 struct TransformerConfig {
     std::size_t hidden = 64;
+    std::size_t layers = 1;
     std::size_t vocab_size = 32000;
 };
 
 class TransformerBlock {
-    public:
-        explicit TransformerBlock(const TransformerConfig& cfg) : cfg_(cfg) {}
+  public:
+    explicit TransformerBlock(const TransformerConfig& cfg) : cfg_(cfg) {}
 
     std::pair<std::vector<float>, std::vector<float>> encode_token(int token_id, std::size_t step) const;
 
-    private:
+  private:
     TransformerConfig cfg_;
 };

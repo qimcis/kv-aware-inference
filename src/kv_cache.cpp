@@ -6,13 +6,14 @@
 #include <stdexcept>
 
 KVCache::KVCache(const KVConfig& cfg, Instrumentation& instr) : cfg_(cfg), instr_(instr) {
-    host_keys_.resize(cfg_.max_blocks * cfg_.block_size * cfg_.hidden);    // host K staging
-    host_values_.resize(cfg_.max_blocks * cfg_.block_size * cfg_.hidden);  // host V staging
+    hidden_stride_ = cfg_.hidden * cfg_.layers;
+    host_keys_.resize(cfg_.max_blocks * cfg_.block_size * hidden_stride_);    // host K staging
+    host_values_.resize(cfg_.max_blocks * cfg_.block_size * hidden_stride_);  // host V staging
     blocks_.resize(cfg_.max_blocks);                                       // metadata per block
     lru_iters_.assign(cfg_.max_blocks, lru_list_.end());                   // initialize LRU slots
     freq_.assign(cfg_.max_blocks, 0.0);
     value_.assign(cfg_.max_blocks, 0.0);
-    device_ = allocate_device_kv(cfg_.max_blocks, cfg_.block_size, cfg_.hidden); // allocate device buffers
+    device_ = allocate_device_kv(cfg_.max_blocks, cfg_.block_size, hidden_stride_); // allocate device buffers
     check_cuda(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "create stream"); // async stream
     owns_stream_ = true;
 }
@@ -21,11 +22,11 @@ KVCache::~KVCache() {
     if (owns_stream_) {
         cudaStreamDestroy(stream_); // destroy stream if we created it.
     }
-    free_device_kv(device_);        // release device side allocations
+        free_device_kv(device_);        // release device side allocations
 }
 
 std::size_t KVCache::bytes_per_block() const {
-    return cfg_.block_size * cfg_.hidden * sizeof(float) * 2; // K and V, float32
+    return cfg_.block_size * hidden_stride_ * sizeof(float) * 2; // K and V, float32
 }
 
 void KVCache::log_evictions(int block_id) {
@@ -96,6 +97,18 @@ void KVCache::touch_block(int block_id) {
     lru_iters_[block_id] = std::prev(lru_list_.end());
 }
 
+void KVCache::touch_sequence_blocks(std::size_t seq_id, int skip_block) {
+    for (std::size_t i = 0; i < blocks_.size(); ++i) {
+        if (!blocks_[i].in_use || blocks_[i].seq_id != seq_id) {
+            continue;
+        }
+        if (skip_block >= 0 && static_cast<std::size_t>(skip_block) == i) {
+            continue;
+        }
+        touch_block(static_cast<int>(i));
+    }
+}
+
 int KVCache::allocate_block(std::size_t seq_id) {
     // first look for unused blocks
     for (std::size_t i = 0; i < blocks_.size(); ++i) {
@@ -143,7 +156,7 @@ int KVCache::allocate_block(std::size_t seq_id) {
 
 void KVCache::record_transfer(std::size_t seq_id, std::size_t block_id, std::size_t token_index,
                               std::size_t tokens, bool decode_step) {
-    std::size_t bytes = tokens * cfg_.hidden * sizeof(float) * 2; // K+V bytes
+    std::size_t bytes = tokens * hidden_stride_ * sizeof(float) * 2; // K+V bytes
     instr_.log(EventType::kTransfer, decode_step ? "decode" : "prefill", seq_id, block_id,
                token_index, bytes);
 }
@@ -152,7 +165,7 @@ void KVCache::store_token(std::size_t seq_id, std::size_t token_index,
                           int token_id, const std::string& token_text,
                           const std::vector<float>& key, const std::vector<float>& value,
                           bool decode_step) {
-    if (key.size() != cfg_.hidden || value.size() != cfg_.hidden) {
+    if (key.size() != hidden_stride_ || value.size() != hidden_stride_) {
         throw std::runtime_error("key/value size mismatch with hidden size");
     }
     auto& seq = sequences_[seq_id];
@@ -161,8 +174,8 @@ void KVCache::store_token(std::size_t seq_id, std::size_t token_index,
     }
 
     std::size_t block_base =
-        static_cast<std::size_t>(seq.current_block) * cfg_.block_size * cfg_.hidden;
-    std::size_t offset = block_base + seq.tokens_in_block * cfg_.hidden;
+        static_cast<std::size_t>(seq.current_block) * cfg_.block_size * hidden_stride_;
+    std::size_t offset = block_base + seq.tokens_in_block * hidden_stride_;
     std::copy(key.begin(), key.end(), host_keys_.begin() + offset);   // stage K into host buffer
     std::copy(value.begin(), value.end(), host_values_.begin() + offset); // stage V likewise
 
@@ -208,6 +221,8 @@ void KVCache::store_token(std::size_t seq_id, std::size_t token_index,
                     seq.tokens_in_block, decode_step);
 
     touch_block(seq.current_block);
+    // simulate attention reads over the active sequence to update eviction policy
+    touch_sequence_blocks(seq_id, seq.current_block);
     if (seq.tokens_in_block == cfg_.block_size) {
         seq.tokens_in_block = 0; // next token will allocate or reuse a block
     }
