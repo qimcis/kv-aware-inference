@@ -6,8 +6,9 @@
 #include <vector>
 
 struct TransformerConfig {
-    std::size_t hidden = 64;
+    std::size_t hidden = 64;   // heads * head_dim
     std::size_t layers = 1;
+    std::size_t heads = 1;
     std::size_t vocab_size = 32000;
 };
 

@@ -60,7 +60,7 @@ struct AttentionEvent {
 struct RunMeta {
     std::size_t block_size = 0;
     std::size_t max_blocks = 0;
-    std::size_t hidden = 0;
+    std::size_t hidden = 0;     // heads * head_dim
     std::size_t num_heads = 0;
     std::size_t layers = 0;
     std::size_t batch = 0;

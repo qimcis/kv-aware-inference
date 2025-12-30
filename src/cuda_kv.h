@@ -3,6 +3,8 @@
 
 #include <cstddef>
 #include <cuda_runtime.h>
+#include <stdexcept>
+#include <string>
 
 struct DeviceKVLayout {
     float* keys = nullptr;
@@ -23,3 +25,9 @@ void stage_block(const float* host_keys, const float* host_values, std::size_t t
 
 // kernel launcher that writes the staged data into a block slot on device
 void move_block_to_cache(const DeviceKVLayout& layout, std::size_t block_idx, std::size_t tokens, cudaStream_t stream);
+
+inline void check_cuda(cudaError_t err, const char* what) {
+    if (err != cudaSuccess) {
+        throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(err));
+    }
+}

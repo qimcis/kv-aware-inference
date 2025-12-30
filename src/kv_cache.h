@@ -22,7 +22,7 @@ enum class CachePolicy {
 struct KVConfig {
     std::size_t block_size = 16;
     std::size_t max_blocks = 16;
-    std::size_t hidden = 64;
+    std::size_t hidden = 64; // heads * head_dim
     std::size_t layers = 1;
     CachePolicy policy = CachePolicy::kLRU;
     std::size_t window_size = 0; // only used by sliding-window (tokens to keep)
@@ -41,6 +41,9 @@ class KVCache {
     void store_token(std::size_t seq_id, std::size_t token_index,
                      int token_id, const std::string& token_text, const std::vector<float>& key,
                      const std::vector<float>& value, bool decode_step);
+
+    // simulate an attention read over a sequence to touch blocks and log scores
+    void simulate_attention(std::size_t seq_id, std::size_t query_index, std::size_t head, bool decode_step);
 
     // syncronize CUDA stream to ensure transfers are complete
     void synchronize();
@@ -79,6 +82,7 @@ class KVCache {
     int select_victim();
     void touch_block(int block_id);
     void touch_sequence_blocks(std::size_t seq_id, int skip_block);
+    void clear_token_slot(std::size_t block_id, std::size_t block_offset);
 
     KVConfig cfg_;                          // static cache settings
     Instrumentation& instr_;                // event sink shared with the app

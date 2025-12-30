@@ -109,6 +109,17 @@ void KVCache::touch_sequence_blocks(std::size_t seq_id, int skip_block) {
     }
 }
 
+void KVCache::clear_token_slot(std::size_t block_id, std::size_t block_offset) {
+    if (block_id < 0 || static_cast<std::size_t>(block_id) >= blocks_.size()) {
+        return;
+    }
+    std::size_t base = static_cast<std::size_t>(block_id) * cfg_.block_size * hidden_stride_;
+    std::size_t offset = block_offset * hidden_stride_;
+    std::size_t bytes = hidden_stride_ * sizeof(float);
+    check_cuda(cudaMemsetAsync(device_.keys + base + offset, 0, bytes, stream_), "clear keys");
+    check_cuda(cudaMemsetAsync(device_.values + base + offset, 0, bytes, stream_), "clear values");
+}
+
 int KVCache::allocate_block(std::size_t seq_id) {
     // first look for unused blocks
     for (std::size_t i = 0; i < blocks_.size(); ++i) {
@@ -208,6 +219,7 @@ void KVCache::store_token(std::size_t seq_id, std::size_t token_index,
                     instr_.log_token_event("window_evict", seq_id, static_cast<std::size_t>(drop.block_id),
                                            drop.block_offset, drop.token_index, drop.token_id,
                                            drop.token_text, drop.decode);
+                    clear_token_slot(static_cast<std::size_t>(drop.block_id), drop.block_offset);
                 }
             }
         }
@@ -223,6 +235,7 @@ void KVCache::store_token(std::size_t seq_id, std::size_t token_index,
     touch_block(seq.current_block);
     // simulate attention reads over the active sequence to update eviction policy
     touch_sequence_blocks(seq_id, seq.current_block);
+    simulate_attention(seq_id, token_index, 0, decode_step);
     if (seq.tokens_in_block == cfg_.block_size) {
         seq.tokens_in_block = 0; // next token will allocate or reuse a block
     }
@@ -230,4 +243,22 @@ void KVCache::store_token(std::size_t seq_id, std::size_t token_index,
 
 void KVCache::synchronize() {
     check_cuda(cudaStreamSynchronize(stream_), "stream sync");
+}
+
+void KVCache::simulate_attention(std::size_t seq_id, std::size_t query_index, std::size_t head, bool decode_step) {
+    auto it = sequences_.find(seq_id);
+    if (it == sequences_.end()) {
+        return;
+    }
+    std::size_t keys = it->second.total_tokens;
+    if (keys == 0) {
+        return;
+    }
+    std::size_t capped = std::min<std::size_t>(keys, 1024); // avoid runaway vectors
+    std::vector<float> scores(capped, 0.0f);
+    for (std::size_t i = 0; i < capped; ++i) {
+        // simple decreasing weight to keep deterministic but distinct
+        scores[i] = 1.0f / static_cast<float>(i + 1);
+    }
+    instr_.log_attention(seq_id, query_index, head, scores, decode_step);
 }
