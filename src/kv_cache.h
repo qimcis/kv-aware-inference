@@ -24,6 +24,8 @@ struct KVConfig {
     std::size_t max_blocks = 16;
     std::size_t hidden = 64; // heads * head_dim
     std::size_t layers = 1;
+    std::size_t heads = 1;
+    std::size_t head_dim = 64;
     CachePolicy policy = CachePolicy::kLRU;
     std::size_t window_size = 0; // only used by sliding-window (tokens to keep)
     double decay = 0.9;          // used by LFU/cost policies

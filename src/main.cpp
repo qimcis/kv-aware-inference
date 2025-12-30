@@ -141,7 +141,7 @@ void run_simulation(const RunConfig& run) {
     Instrumentation instr; // collects detailed cache events
     std::size_t hidden_stride = run.hidden * run.layers;
     instr.set_run_meta({run.block_size, run.max_blocks, hidden_stride, run.heads, run.layers, run.head_dim, run.batch, false});
-    KVCache kv_cache({run.block_size, run.max_blocks, run.hidden, run.layers, run.policy, run.window_size},
+    KVCache kv_cache({run.block_size, run.max_blocks, run.hidden, run.layers, run.heads, run.head_dim, run.policy, run.window_size},
                      instr); // block cache
     NaiveCache naive(hidden_stride, instr); // straight line baseline
 
@@ -178,7 +178,7 @@ void run_simulation(const RunConfig& run) {
     std::cout << "batch=" << run.batch << " prefill=" << run.prefill_tokens
               << " decode=" << run.decode_tokens << " block_size=" << run.block_size
               << " max_blocks=" << run.max_blocks << " hidden=" << run.hidden
-              << " layers=" << run.layers << " heads=" << run.heads
+              << " layers=" << run.layers << " heads=" << run.heads << " head_dim=" << run.head_dim
               << " policy=" << policy_name(run.policy);
     if (run.policy == CachePolicy::kSlidingWindow && run.window_size > 0) {
         std::cout << " window=" << run.window_size;

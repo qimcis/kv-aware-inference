@@ -220,6 +220,15 @@ void KVCache::store_token(std::size_t seq_id, std::size_t token_index,
                                            drop.block_offset, drop.token_index, drop.token_id,
                                            drop.token_text, drop.decode);
                     clear_token_slot(static_cast<std::size_t>(drop.block_id), drop.block_offset);
+                    if (toks.empty()) {
+                        // wipe the whole block for visualization similarity
+                        std::size_t base = static_cast<std::size_t>(drop.block_id) * cfg_.block_size * hidden_stride_;
+                        std::size_t bytes = cfg_.block_size * hidden_stride_ * sizeof(float);
+                        check_cuda(cudaMemsetAsync(device_.keys + base, 0, bytes, stream_), "wipe block keys");
+                        check_cuda(cudaMemsetAsync(device_.values + base, 0, bytes, stream_), "wipe block values");
+                        instr_.log(EventType::kEvict, "window_wipe", seq_id, static_cast<std::size_t>(drop.block_id),
+                                   drop.token_index, bytes);
+                    }
                 }
             }
         }
@@ -247,21 +256,62 @@ void KVCache::synchronize() {
 
 void KVCache::simulate_attention(std::size_t seq_id, std::size_t query_index, std::size_t head, bool decode_step) {
     auto it = sequences_.find(seq_id);
-    if (it == sequences_.end()) {
+    if (it == sequences_.end() || cfg_.layers == 0 || cfg_.hidden == 0 || cfg_.max_blocks == 0) {
         return;
     }
-    std::size_t keys = it->second.total_tokens;
-    if (keys == 0) {
+    // Collect tokens for this sequence sorted by token_index
+    std::vector<TokenLabel> toks;
+    toks.reserve(it->second.total_tokens);
+    for (const auto& blk : blocks_) {
+        if (!blk.in_use || blk.seq_id != seq_id) {
+            continue;
+        }
+        toks.insert(toks.end(), blk.tokens.begin(), blk.tokens.end());
+    }
+    if (toks.empty()) {
         return;
     }
-    std::size_t capped = std::min<std::size_t>(keys, 1024); // avoid runaway vectors
+    std::sort(toks.begin(), toks.end(), [](const TokenLabel& a, const TokenLabel& b) {
+        return a.token_index < b.token_index;
+    });
+    std::size_t capped = std::min<std::size_t>(toks.size(), 1024);
+
+    // Build a simple query vector from the stored key of the query token
+    auto qkv = fetch_token_kv(seq_id, query_index);
+    if (qkv.first.empty()) {
+        return;
+    }
+    std::size_t head_dim = cfg_.head_dim > 0 ? cfg_.head_dim
+                                             : (cfg_.heads > 0 ? cfg_.hidden / cfg_.heads : cfg_.hidden);
+    if (head_dim == 0) {
+        return;
+    }
     std::vector<float> scores(capped, 0.0f);
     for (std::size_t i = 0; i < capped; ++i) {
-        // simple decreasing weight to keep deterministic but distinct
-        scores[i] = 1.0f / static_cast<float>(i + 1);
+        const auto& tok = toks[i];
+        std::size_t base =
+            static_cast<std::size_t>(tok.block_id) * cfg_.block_size * hidden_stride_ + tok.block_offset * hidden_stride_;
+        for (std::size_t layer = 0; layer < cfg_.layers; ++layer) {
+            std::size_t layer_offset = layer * cfg_.hidden;
+            std::size_t head_offset = head * head_dim;
+            float dot = 0.0f;
+            for (std::size_t d = 0; d < head_dim; ++d) {
+                float qv = qkv.first[layer_offset + head_offset + d];
+                float kv = host_keys_[base + layer_offset + head_offset + d];
+                dot += qv * kv;
+            }
+            scores[i] = dot;
+        }
+        touch_block(tok.block_id);
+        instr_.log_token_event("touch",
+                               seq_id,
+                               static_cast<std::size_t>(tok.block_id),
+                               tok.block_offset,
+                               tok.token_index,
+                               tok.token_id,
+                               tok.token_text,
+                               tok.decode);
     }
-    // touch all blocks for this sequence to simulate read-side recency
-    touch_sequence_blocks(seq_id, -1);
     instr_.log_attention(seq_id, query_index, head, scores, decode_step);
 }
 

@@ -82,6 +82,20 @@ class Instrumentation {
         events_.push_back(
             Event{type, label, batch_id, block_id, token_index, bytes, token_id, token_text, decode,
                   std::chrono::steady_clock::now()});
+        switch (type) {
+        case EventType::kAllocate:
+            ++total_alloc_;
+            break;
+        case EventType::kEvict:
+            ++total_evict_;
+            break;
+        case EventType::kTransfer:
+            total_transfer_bytes_ += bytes;
+            break;
+        default:
+            break;
+        }
+        ++total_events_;
     }
 
     void log_token_event(const std::string& kind, std::size_t batch_id, std::size_t block_id,
@@ -97,6 +111,7 @@ class Instrumentation {
                                            token_text,
                                            decode,
                                            std::chrono::steady_clock::now()});
+        ++total_events_;
     }
 
     void log_attention(std::size_t batch_id, std::size_t query_index, std::size_t head,
@@ -104,6 +119,7 @@ class Instrumentation {
         std::lock_guard<std::mutex> guard(mu_);
         attention_events_.push_back(
             AttentionEvent{batch_id, query_index, head, decode, scores, std::chrono::steady_clock::now()});
+        ++total_events_;
     }
 
     void dump(std::ostream& os) const {
@@ -213,10 +229,38 @@ class Instrumentation {
                 << "\"bytes\":" << e.bytes << ","
                 << "\"token_id\":" << e.token_id << ","
                 << "\"token_text\":\"" << escape(e.token_text) << "\","
-                << "\"decode\":" << (e.decode ? "true" : "false") << ","
-                << "\"timestamp_us\":" << time_since_start(e.timestamp)
+                << "\"phase\":\"" << (e.decode ? "decode" : "prefill") << "\","
+                << "\"timestamp_us\":" << time_since_start(e.timestamp) << ","
+                << "\"timestamp\":" << time_since_start(e.timestamp)
                 << "}";
             if (i + 1 < events_.size()) {
+                out << ",";
+            }
+        }
+        if (!events_.empty() && !token_events_.empty()) {
+            out << ",";
+        }
+        // also emit token events in the same array for compatibility
+        for (std::size_t i = 0; i < token_events_.size(); ++i) {
+            const auto& t = token_events_[i];
+            out << "{"
+                << "\"type\":\"" << (t.kind == "place" ? "token_placed"
+                                      : t.kind == "evict" || t.kind == "window_evict" ? "token_evicted"
+                                      : t.kind == "touch" ? "token_touched"
+                                      : "token_event") << "\","
+                << "\"label\":\"" << escape(t.kind) << "\","
+                << "\"batch\":" << t.batch_id << ","
+                << "\"block\":" << t.block_id << ","
+                << "\"slot\":" << t.block_offset << ","
+                << "\"token_index\":" << t.token_index << ","
+                << "\"bytes\":0,"
+                << "\"token_id\":" << t.token_id << ","
+                << "\"token_text\":\"" << escape(t.token_text) << "\","
+                << "\"phase\":\"" << (t.decode ? "decode" : "prefill") << "\","
+                << "\"timestamp_us\":" << time_since_start(t.timestamp) << ","
+                << "\"timestamp\":" << time_since_start(t.timestamp)
+                << "}";
+            if (i + 1 < token_events_.size()) {
                 out << ",";
             }
         }
@@ -264,6 +308,13 @@ class Instrumentation {
             }
         }
         out << "]";
+
+        out << ",\"summary\":{"
+            << "\"total_allocations\":" << total_alloc_ << ","
+            << "\"total_evictions\":" << total_evict_ << ","
+            << "\"total_transfer_bytes\":" << total_transfer_bytes_ << ","
+            << "\"total_events\":" << total_events_
+            << "}";
 
         out << "}\n";
     }
@@ -331,6 +382,10 @@ class Instrumentation {
     std::vector<Event> events_;
     std::vector<TokenEvent> token_events_;
     std::vector<AttentionEvent> attention_events_;
+    std::size_t total_alloc_ = 0;
+    std::size_t total_evict_ = 0;
+    std::size_t total_transfer_bytes_ = 0;
+    std::size_t total_events_ = 0;
     RunMeta meta_;
     mutable std::mutex mu_;
 };
